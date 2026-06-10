@@ -3,6 +3,7 @@ import ServiceManagement
 import UserNotifications
 import AppKit
 import UniformTypeIdentifiers
+import OSLog
 
 extension ContentView {
     // MARK: - Settings View
@@ -343,7 +344,7 @@ extension ContentView {
                 try SMAppService.mainApp.unregister()
             }
         } catch {
-            print("Failed to set launch at login: \(error)")
+            AppLog.app.error("Failed to set launch at login: \(error.localizedDescription, privacy: .public)")
         }
     }
     
@@ -352,7 +353,7 @@ extension ContentView {
     func requestNotificationPermission() {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
             if let error = error {
-                print("Notification permission error: \(error)")
+                AppLog.app.error("Notification permission error: \(error.localizedDescription, privacy: .public)")
             }
         }
     }

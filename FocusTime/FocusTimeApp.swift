@@ -9,6 +9,7 @@ import SwiftUI
 import Combine
 import Carbon.HIToolbox
 import UserNotifications
+import OSLog
 
 // MARK: - Shared Defaults Keys
 enum FocusTimeDefaults {
@@ -173,7 +174,7 @@ class FocusModeManager {
         do {
             try task.run()
         } catch {
-            print("Focus mode shortcut not found. Using fallback.")
+            AppLog.app.warning("Focus mode shortcut not found. Using fallback.")
             enableFocusViaAppleScript()
         }
     }
@@ -186,7 +187,7 @@ class FocusModeManager {
         do {
             try task.run()
         } catch {
-            print("Focus mode shortcut not found. Using fallback.")
+            AppLog.app.warning("Focus mode shortcut not found. Using fallback.")
             disableFocusViaAppleScript()
         }
     }
@@ -210,7 +211,7 @@ class FocusModeManager {
         var error: NSDictionary?
         script.executeAndReturnError(&error)
         if let error = error {
-            print("AppleScript error: \(error)")
+            AppLog.app.error("AppleScript error: \(String(describing: error), privacy: .public)")
         }
     }
 }

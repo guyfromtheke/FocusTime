@@ -11,6 +11,7 @@ import Foundation
 import SwiftUI
 import Combine
 import Security
+import OSLog
 
 // MARK: - Notion Configuration
 struct NotionConfig {
@@ -271,7 +272,7 @@ class NotionService: ObservableObject {
             await MainActor.run {
                 lastSyncStatus = "✗ \(error.localizedDescription)"
             }
-            print("Notion sync error: \(error)")
+            AppLog.notion.error("Notion sync error: \(error.localizedDescription, privacy: .public)")
         }
         
         await MainActor.run {
@@ -360,7 +361,7 @@ class NotionService: ObservableObject {
                 try await Task.sleep(nanoseconds: 350_000_000) // 350ms
                 
             } catch {
-                print("Failed to sync \(dateKey): \(error)")
+                AppLog.notion.error("Failed to sync \(dateKey, privacy: .public): \(error.localizedDescription, privacy: .public)")
                 failedCount += 1
             }
         }
@@ -392,14 +393,14 @@ class NotionService: ObservableObject {
                     return true
                 } else {
                     if let errorString = String(data: data, encoding: .utf8) {
-                        print("Test connection error (\(httpResponse.statusCode)): \(errorString)")
+                        AppLog.notion.error("Test connection error (\(httpResponse.statusCode)): \(errorString, privacy: .public)")
                     }
                     return false
                 }
             }
             return false
         } catch {
-            print("Connection test failed: \(error)")
+            AppLog.notion.error("Connection test failed: \(error.localizedDescription, privacy: .public)")
             return false
         }
     }
@@ -429,7 +430,7 @@ class NotionService: ObservableObject {
             
             if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode != 200 {
                 if let errorString = String(data: data, encoding: .utf8) {
-                    print("Query error (\(httpResponse.statusCode)): \(errorString)")
+                    AppLog.notion.error("Query error (\(httpResponse.statusCode)): \(errorString, privacy: .public)")
                 }
                 return nil
             }
@@ -437,7 +438,7 @@ class NotionService: ObservableObject {
             let queryResponse = try JSONDecoder().decode(NotionQueryResponse.self, from: data)
             return queryResponse.results.first
         } catch {
-            print("Error finding entry: \(error)")
+            AppLog.notion.error("Error finding entry: \(error.localizedDescription, privacy: .public)")
             return nil
         }
     }
@@ -469,7 +470,7 @@ class NotionService: ObservableObject {
             
             if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode != 200 {
                 if let errorString = String(data: data, encoding: .utf8) {
-                    print("Road to Mastery query error (\(httpResponse.statusCode)): \(errorString)")
+                    AppLog.notion.error("Road to Mastery query error (\(httpResponse.statusCode)): \(errorString, privacy: .public)")
                 }
                 return nil
             }
@@ -477,7 +478,7 @@ class NotionService: ObservableObject {
             let queryResponse = try JSONDecoder().decode(NotionQueryResponse.self, from: data)
             return queryResponse.results.first?.id
         } catch {
-            print("Error finding Road to Mastery entry: \(error)")
+            AppLog.notion.error("Error finding Road to Mastery entry: \(error.localizedDescription, privacy: .public)")
             return nil
         }
     }
@@ -535,7 +536,7 @@ class NotionService: ObservableObject {
         
         if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode != 200 {
             if let errorString = String(data: data, encoding: .utf8) {
-                print("Create page error (\(httpResponse.statusCode)): \(errorString)")
+                AppLog.notion.error("Create page error (\(httpResponse.statusCode)): \(errorString, privacy: .public)")
             }
             throw NotionError.createFailed(statusCode: httpResponse.statusCode)
         }
@@ -582,7 +583,7 @@ class NotionService: ObservableObject {
         
         if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode != 200 {
             if let errorString = String(data: data, encoding: .utf8) {
-                print("Update page error (\(httpResponse.statusCode)): \(errorString)")
+                AppLog.notion.error("Update page error (\(httpResponse.statusCode)): \(errorString, privacy: .public)")
             }
             throw NotionError.updateFailed(statusCode: httpResponse.statusCode)
         }
