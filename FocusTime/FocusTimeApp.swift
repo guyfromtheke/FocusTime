@@ -282,18 +282,30 @@ class TerminalCommandCenter {
     static let shared = TerminalCommandCenter()
     
     var handler: ((String) -> Bool)?
+    private var pollTimer: Timer?
     
     private init() {}
     
     func configure(handler: @escaping (String) -> Bool) {
         self.handler = handler
+        startPolling()
         processPendingCommand()
+    }
+    
+    private func startPolling() {
+        guard pollTimer == nil else { return }
+        
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            self?.processPendingCommand()
+        }
     }
     
     func processPendingCommand() {
         let defaults = UserDefaults.standard
-        guard let command = defaults.string(forKey: FocusTimeDefaults.terminalCommand),
-              let commandID = defaults.string(forKey: FocusTimeDefaults.terminalCommandID),
+        defaults.synchronize()
+        
+        guard let command = readPendingCommandValue(FocusTimeDefaults.terminalCommand),
+              let commandID = readPendingCommandValue(FocusTimeDefaults.terminalCommandID),
               !command.isEmpty else {
             return
         }
@@ -312,6 +324,23 @@ class TerminalCommandCenter {
         defaults.set(handled ? "handled \(command)" : "unknown command \(command)", forKey: FocusTimeDefaults.terminalLastCommandStatus)
         defaults.set(Date().timeIntervalSince1970, forKey: FocusTimeDefaults.terminalLastCommandHandledAt)
         defaults.removeObject(forKey: FocusTimeDefaults.terminalCommand)
+        defaults.removeObject(forKey: FocusTimeDefaults.terminalCommandID)
+        defaults.synchronize()
+    }
+    
+    private func readPendingCommandValue(_ key: String) -> String? {
+        if let value = UserDefaults.standard.string(forKey: key) {
+            return value
+        }
+        
+        guard let preferencesURL = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("Preferences")
+            .appendingPathComponent("\(FocusTimeDefaults.suiteName).plist"),
+              let plist = NSDictionary(contentsOf: preferencesURL) as? [String: Any] else {
+            return nil
+        }
+        
+        return plist[key] as? String
     }
 }
 
@@ -348,6 +377,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 struct FocusTimeApp: App {
     @StateObject private var timerState = TimerState()
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    @Environment(\.openWindow) private var openWindow
     
     @State private var timer: Timer?
     @AppStorage("focusModeEnabled") private var focusModeEnabled = true
@@ -379,6 +409,24 @@ struct FocusTimeApp: App {
             }
         }
         .menuBarExtraStyle(.window)
+        
+        WindowGroup("FocusTime", id: "main") {
+            ContentView(
+                timerState: timerState,
+                onStartPause: toggleTimer,
+                onReset: resetTimer,
+                onSwitchMode: switchMode,
+                onTagSelected: completeSessionWithTag
+            )
+            .frame(minWidth: 280, idealWidth: 320, minHeight: 420)
+            .onAppear {
+                appDelegate.toggleCallback = toggleTimer
+                if appDelegate.hotkeyManager == nil {
+                    appDelegate.hotkeyManager = HotkeyManager(callback: toggleTimer)
+                }
+            }
+        }
+        .defaultSize(width: 340, height: 520)
     }
     
     var menuBarColor: Color {
@@ -423,13 +471,18 @@ struct FocusTimeApp: App {
         case "switch":
             switchMode()
         case "open":
-            NSApplication.shared.activate(ignoringOtherApps: true)
+            showMainWindow()
         default:
             return false
         }
         
         timerState.saveRuntimeStatus()
         return true
+    }
+    
+    func showMainWindow() {
+        openWindow(id: "main")
+        NSApplication.shared.activate(ignoringOtherApps: true)
     }
     
     func toggleTimer() {

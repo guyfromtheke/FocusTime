@@ -143,6 +143,16 @@ send_command() {
   echo "Queued '$command'. FocusTime will handle it when it activates."
 }
 
+queue_command() {
+  local command="$1"
+  local command_id
+  command_id="$(date +%s)-$$-$RANDOM"
+
+  write_default_string terminalCommand "$command"
+  write_default_string terminalCommandID "$command_id"
+  write_default_float terminalCommandIssuedAt "$(date +%s)"
+}
+
 force_build=false
 dev_mode=false
 command="open"
@@ -177,6 +187,7 @@ fi
 
 case "$command" in
   open)
+    queue_command open
     open_app
     ;;
   status)
