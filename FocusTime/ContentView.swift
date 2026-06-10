@@ -38,7 +38,7 @@ struct ContentView: View {
     @State var editTagColor = Color.blue
     
     // Notion settings
-    @State var notionApiKey = NotionConfig.apiKey
+    @State var notionApiKey = ""
     @State var notionDatabaseId = NotionConfig.databaseId
     @State var notionRoadToMasteryDatabaseId = NotionConfig.roadToMasteryDatabaseId
     @State var notionSyncEnabled = NotionConfig.syncEnabled

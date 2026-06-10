@@ -13,6 +13,9 @@ extension ContentView {
                     .font(.caption)
                     .onChange(of: notionSyncEnabled) { newValue in
                         NotionConfig.syncEnabled = newValue
+                        if newValue && notionApiKey.isEmpty {
+                            notionApiKey = NotionConfig.apiKey
+                        }
                     }
                 
                 VStack(alignment: .leading, spacing: 4) {
@@ -198,6 +201,11 @@ extension ContentView {
             }
             .buttonStyle(.bordered)
             .font(.caption)
+        }
+        .onAppear {
+            if NotionConfig.syncEnabled {
+                notionApiKey = NotionConfig.apiKey
+            }
         }
     }
     

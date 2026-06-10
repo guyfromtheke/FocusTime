@@ -18,18 +18,21 @@ struct NotionConfig {
     private static let apiKeyDefaultsKey = "notionApiKey"
     private static let databaseIdDefaultsKey = "notionDatabaseId"
     private static let roadToMasteryDatabaseIdDefaultsKey = "notionRoadToMasteryDatabaseId"
+    private static let apiKeyConfiguredDefaultsKey = "notionApiKeyConfigured"
     private static let keychainService = "FocusTime.Notion"
     private static let keychainAccount = "notionApiKey"
     
     static var apiKey: String {
         get {
             if let token = KeychainStore.read(service: keychainService, account: keychainAccount) {
+                UserDefaults.standard.set(true, forKey: apiKeyConfiguredDefaultsKey)
                 return token
             }
             
             if let legacyToken = UserDefaults.standard.string(forKey: apiKeyDefaultsKey), !legacyToken.isEmpty {
                 KeychainStore.save(legacyToken, service: keychainService, account: keychainAccount)
                 UserDefaults.standard.removeObject(forKey: apiKeyDefaultsKey)
+                UserDefaults.standard.set(true, forKey: apiKeyConfiguredDefaultsKey)
                 return legacyToken
             }
             
@@ -39,11 +42,18 @@ struct NotionConfig {
             let trimmedValue = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmedValue.isEmpty {
                 KeychainStore.delete(service: keychainService, account: keychainAccount)
+                UserDefaults.standard.set(false, forKey: apiKeyConfiguredDefaultsKey)
             } else {
                 KeychainStore.save(trimmedValue, service: keychainService, account: keychainAccount)
+                UserDefaults.standard.set(true, forKey: apiKeyConfiguredDefaultsKey)
             }
             UserDefaults.standard.removeObject(forKey: apiKeyDefaultsKey)
         }
+    }
+    
+    static var hasApiKey: Bool {
+        UserDefaults.standard.bool(forKey: apiKeyConfiguredDefaultsKey) ||
+        !(UserDefaults.standard.string(forKey: apiKeyDefaultsKey) ?? "").isEmpty
     }
     
     static var databaseId: String {
@@ -57,7 +67,7 @@ struct NotionConfig {
     }
     
     static var isConfigured: Bool {
-        !apiKey.isEmpty && !databaseId.isEmpty
+        hasApiKey && !databaseId.isEmpty
     }
     
     static var syncEnabled: Bool {
