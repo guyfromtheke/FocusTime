@@ -9,6 +9,8 @@ import SwiftUI
 import UserNotifications
 import ServiceManagement
 import AVFoundation
+import AppKit
+import UniformTypeIdentifiers
 
 // MARK: - Main Content View
 struct ContentView: View {
@@ -37,10 +39,13 @@ struct ContentView: View {
     
     // Notion settings
     @State private var notionApiKey = NotionConfig.apiKey
+    @State private var notionDatabaseId = NotionConfig.databaseId
+    @State private var notionRoadToMasteryDatabaseId = NotionConfig.roadToMasteryDatabaseId
     @State private var notionSyncEnabled = NotionConfig.syncEnabled
     @State private var isTestingConnection = false
     @State private var connectionTestResult: String?
     @State private var historySyncResult: String?
+    @State private var backupResult: String?
     
     @AppStorage("launchAtLogin") private var launchAtLogin = false
     @AppStorage("soundEnabled") private var soundEnabled = true
@@ -674,20 +679,48 @@ struct ContentView: View {
                 Toggle("Enable Sync", isOn: $notionSyncEnabled)
                     .toggleStyle(.checkbox)
                     .font(.caption)
-                    .onChange(of: notionSyncEnabled) { _, newValue in
+                    .onChange(of: notionSyncEnabled) { newValue in
                         NotionConfig.syncEnabled = newValue
                     }
                 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("API Key")
+                    Text("API Token")
                         .font(.caption)
                         .foregroundColor(.secondary)
                     
                     SecureField("secret_...", text: $notionApiKey)
                         .textFieldStyle(.roundedBorder)
                         .font(.caption)
-                        .onChange(of: notionApiKey) { _, newValue in
+                        .onChange(of: notionApiKey) { newValue in
                             NotionConfig.apiKey = newValue
+                        }
+                }
+                
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("FocusTime Database ID")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    
+                    TextField("Required", text: $notionDatabaseId)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.caption)
+                        .onChange(of: notionDatabaseId) { newValue in
+                            NotionConfig.databaseId = newValue
+                            notionDatabaseId = NotionConfig.databaseId
+                        }
+                }
+                
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Road to Mastery Database ID")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    
+                    TextField("Optional", text: $notionRoadToMasteryDatabaseId)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.caption)
+                        .onChange(of: notionRoadToMasteryDatabaseId) { newValue in
+                            NotionConfig.roadToMasteryDatabaseId = newValue
+                            notionRoadToMasteryDatabaseId = NotionConfig.roadToMasteryDatabaseId
                         }
                 }
                 
@@ -697,7 +730,7 @@ struct ContentView: View {
                     }
                     .buttonStyle(.bordered)
                     .font(.caption)
-                    .disabled(notionApiKey.isEmpty || isTestingConnection)
+                    .disabled(!NotionConfig.isConfigured || isTestingConnection)
                     
                     if isTestingConnection {
                         ProgressView()
@@ -749,6 +782,23 @@ struct ContentView: View {
                 .buttonStyle(.bordered)
                 .font(.caption)
                 .disabled(!NotionConfig.isConfigured || !NotionConfig.syncEnabled)
+                
+                if timerState.sessionHistory.pendingNotionSyncDates.count > 0 {
+                    HStack {
+                        Text("\(timerState.sessionHistory.pendingNotionSyncDates.count) day(s) waiting to retry")
+                            .font(.caption2)
+                            .foregroundColor(.orange)
+                        
+                        Spacer()
+                        
+                        Button("Retry") {
+                            timerState.sessionHistory.retryPendingNotionSyncs()
+                        }
+                        .buttonStyle(.bordered)
+                        .font(.caption2)
+                        .disabled(!NotionConfig.isConfigured || !NotionConfig.syncEnabled)
+                    }
+                }
                 
                 Divider()
                     .padding(.vertical, 4)
@@ -802,7 +852,7 @@ struct ContentView: View {
                 Text("3. Copy the API key and paste above")
                     .font(.caption2)
                     .foregroundColor(.secondary)
-                Text("4. Share your FocusTime Log database with the integration")
+                Text("4. Paste the database ID and share it with the integration")
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
@@ -960,7 +1010,7 @@ struct ContentView: View {
                     Text("Work:")
                         .frame(width: 80, alignment: .leading)
                     Stepper("\(timerState.workMinutes) min", value: $timerState.workMinutes, in: 1...60)
-                        .onChange(of: timerState.workMinutes) { _, _ in
+                        .onChange(of: timerState.workMinutes) { _ in
                             if timerState.mode == .work && !timerState.isRunning {
                                 timerState.timeRemaining = timerState.workDuration
                             }
@@ -972,7 +1022,7 @@ struct ContentView: View {
                     Text("Short Break:")
                         .frame(width: 80, alignment: .leading)
                     Stepper("\(timerState.shortBreakMinutes) min", value: $timerState.shortBreakMinutes, in: 1...30)
-                        .onChange(of: timerState.shortBreakMinutes) { _, _ in
+                        .onChange(of: timerState.shortBreakMinutes) { _ in
                             if timerState.mode == .shortBreak && !timerState.isRunning {
                                 timerState.timeRemaining = timerState.shortBreakDuration
                             }
@@ -984,7 +1034,7 @@ struct ContentView: View {
                     Text("Long Break:")
                         .frame(width: 80, alignment: .leading)
                     Stepper("\(timerState.longBreakMinutes) min", value: $timerState.longBreakMinutes, in: 1...60)
-                        .onChange(of: timerState.longBreakMinutes) { _, _ in
+                        .onChange(of: timerState.longBreakMinutes) { _ in
                             if timerState.mode == .longBreak && !timerState.isRunning {
                                 timerState.timeRemaining = timerState.longBreakDuration
                             }
@@ -1016,6 +1066,34 @@ struct ContentView: View {
                 }
                 .buttonStyle(.borderless)
                 .font(.caption)
+            }
+            
+            Divider()
+            
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Backup")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                
+                HStack {
+                    Button("Export JSON") {
+                        exportBackup()
+                    }
+                    .buttonStyle(.bordered)
+                    .font(.caption)
+                    
+                    Button("Import JSON") {
+                        importBackup()
+                    }
+                    .buttonStyle(.bordered)
+                    .font(.caption)
+                }
+                
+                if let backupResult = backupResult {
+                    Text(backupResult)
+                        .font(.caption2)
+                        .foregroundColor(backupResult.hasPrefix("✓") ? .green : .red)
+                }
             }
             
             Divider()
@@ -1053,7 +1131,7 @@ struct ContentView: View {
                 Toggle("Launch at Login", isOn: $launchAtLogin)
                     .toggleStyle(.checkbox)
                     .font(.caption)
-                    .onChange(of: launchAtLogin) { _, newValue in
+                    .onChange(of: launchAtLogin) { newValue in
                         setLaunchAtLogin(enabled: newValue)
                     }
                 
@@ -1122,6 +1200,48 @@ struct ContentView: View {
                 }
             }
         }
+    }
+    
+    func exportBackup() {
+        do {
+            let data = try timerState.sessionHistory.exportBackupData()
+            let panel = NSSavePanel()
+            panel.allowedContentTypes = [.json]
+            panel.nameFieldStringValue = "FocusTime Backup \(backupDateString()).json"
+            panel.canCreateDirectories = true
+            
+            if panel.runModal() == .OK, let url = panel.url {
+                try data.write(to: url, options: [.atomic])
+                backupResult = "✓ Exported backup"
+            }
+        } catch {
+            backupResult = "✗ \(error.localizedDescription)"
+        }
+    }
+    
+    func importBackup() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        
+        if panel.runModal() == .OK, let url = panel.url {
+            do {
+                let data = try Data(contentsOf: url)
+                try timerState.sessionHistory.importBackupData(data)
+                timerState.timeRemaining = timerState.currentModeDuration()
+                timerState.saveRuntimeStatus()
+                backupResult = "✓ Imported backup"
+            } catch {
+                backupResult = "✗ \(error.localizedDescription)"
+            }
+        }
+    }
+    
+    func backupDateString() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: Date())
     }
     
     // MARK: - Helper Views

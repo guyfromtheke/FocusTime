@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_dir/.." && pwd)"
+launcher="$repo_root/bin/focus"
+
+install_dir="${1:-$HOME/.local/bin}"
+target="$install_dir/focus"
+
+mkdir -p "$install_dir"
+chmod +x "$launcher"
+ln -sf "$launcher" "$target"
+
+cat <<EOF
+Installed focus -> $target
+
+Make sure this directory is on your PATH:
+  export PATH="$install_dir:\$PATH"
+
+Then run:
+  focus
+EOF

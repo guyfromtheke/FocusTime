@@ -46,15 +46,36 @@ struct TaggedSession: Codable {
     var count: Int
 }
 
+// MARK: - Backup Document
+struct SessionHistoryBackup: Codable {
+    let schemaVersion: Int
+    let exportedAt: Date
+    let history: [String: [TaggedSession]]
+    let tags: [SessionTag]
+}
+
+enum SessionHistoryImportError: LocalizedError {
+    case emptyBackup
+    
+    var errorDescription: String? {
+        switch self {
+        case .emptyBackup:
+            return "Backup did not contain any sessions or tags"
+        }
+    }
+}
+
 // MARK: - Session History Manager
 class SessionHistory: ObservableObject {
     
     @Published private(set) var history: [String: [TaggedSession]] = [:]
     @Published var availableTags: [SessionTag] = []
+    @Published private(set) var pendingNotionSyncDates: Set<String> = []
     
     private let storageKey = "sessionHistoryTagged"
     private let tagsStorageKey = "savedTags_v3"  // Bumped version for new default tags
     private let legacyStorageKey = "sessionHistory"
+    private let pendingNotionSyncStorageKey = "pendingNotionSyncDates"
     
     var workMinutes: Int = 25  // Set by TimerState
     
@@ -67,6 +88,7 @@ class SessionHistory: ObservableObject {
     init() {
         loadTags()
         loadHistory()
+        loadPendingNotionSyncDates()
         migrateLegacyData()
     }
     
@@ -100,7 +122,7 @@ class SessionHistory: ObservableObject {
         saveHistory()
         
         // Sync to Notion
-        syncToNotion()
+        syncToNotion(dateKey: key)
     }
     
     func sessions(for date: Date) -> Int {
@@ -117,6 +139,7 @@ class SessionHistory: ObservableObject {
     func resetToday() {
         history[todayKey()] = []
         saveHistory()
+        syncToNotion(dateKey: todayKey())
     }
     
     func dateFromKey(_ key: String) -> Date? {
@@ -125,18 +148,36 @@ class SessionHistory: ObservableObject {
     
     // MARK: - Notion Sync
     
-    private func syncToNotion() {
-        let today = Date()
-        let sessions = todaySessions()
-        let tagBreakdown = todaySessionsByTag()
+    private func syncToNotion(dateKey: String) {
+        guard let date = dateFormatter.date(from: dateKey) else { return }
+        syncToNotion(date: date)
+    }
+    
+    private func syncToNotion(date: Date) {
+        let key = dateFormatter.string(from: date)
+        let dayData = history[key] ?? []
+        let sessions = dayData.reduce(0) { $0 + $1.count }
+        var tagBreakdown: [String: Int] = [:]
+        
+        for session in dayData {
+            tagBreakdown[session.tag] = session.count
+        }
         
         Task {
-            await NotionService.shared.syncSession(
-                date: today,
+            let synced = await NotionService.shared.syncSession(
+                date: date,
                 sessions: sessions,
                 tagBreakdown: tagBreakdown,
                 workMinutes: workMinutes
             )
+            
+            await MainActor.run {
+                if synced {
+                    clearPendingNotionSync(dateKey: key)
+                } else if NotionConfig.isConfigured && NotionConfig.syncEnabled {
+                    markPendingNotionSync(dateKey: key)
+                }
+            }
         }
     }
     
@@ -150,7 +191,16 @@ class SessionHistory: ObservableObject {
     }
     
     func manualSync() {
-        syncToNotion()
+        syncToNotion(dateKey: todayKey())
+        retryPendingNotionSyncs()
+    }
+    
+    func retryPendingNotionSyncs() {
+        guard NotionConfig.isConfigured && NotionConfig.syncEnabled else { return }
+        
+        for dateKey in pendingNotionSyncDates.sorted() {
+            syncToNotion(dateKey: dateKey)
+        }
     }
     
     /// Returns all historical data formatted for Notion sync
@@ -160,6 +210,38 @@ class SessionHistory: ObservableObject {
             result[date] = sessions.map { (tag: $0.tag, count: $0.count) }
         }
         return result
+    }
+    
+    // MARK: - Backup / Restore
+    
+    func exportBackupData() throws -> Data {
+        let backup = SessionHistoryBackup(
+            schemaVersion: 1,
+            exportedAt: Date(),
+            history: history,
+            tags: availableTags
+        )
+        
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return try encoder.encode(backup)
+    }
+    
+    func importBackupData(_ data: Data) throws {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let backup = try decoder.decode(SessionHistoryBackup.self, from: data)
+        
+        guard !backup.history.isEmpty || !backup.tags.isEmpty else {
+            throw SessionHistoryImportError.emptyBackup
+        }
+        
+        history = backup.history
+        availableTags = backup.tags.isEmpty ? SessionTag.defaultTags : backup.tags
+        saveHistory()
+        saveTags()
+        markAllHistoryPendingNotionSync()
     }
     
     // MARK: - Tag Management
@@ -413,6 +495,30 @@ class SessionHistory: ObservableObject {
             
             UserDefaults.standard.removeObject(forKey: legacyStorageKey)
         }
+    }
+    
+    private func loadPendingNotionSyncDates() {
+        let saved = UserDefaults.standard.stringArray(forKey: pendingNotionSyncStorageKey) ?? []
+        pendingNotionSyncDates = Set(saved)
+    }
+    
+    private func savePendingNotionSyncDates() {
+        UserDefaults.standard.set(pendingNotionSyncDates.sorted(), forKey: pendingNotionSyncStorageKey)
+    }
+    
+    private func markPendingNotionSync(dateKey: String) {
+        pendingNotionSyncDates.insert(dateKey)
+        savePendingNotionSyncDates()
+    }
+    
+    private func clearPendingNotionSync(dateKey: String) {
+        pendingNotionSyncDates.remove(dateKey)
+        savePendingNotionSyncDates()
+    }
+    
+    private func markAllHistoryPendingNotionSync() {
+        pendingNotionSyncDates.formUnion(history.keys)
+        savePendingNotionSyncDates()
     }
 }
 

@@ -10,27 +10,118 @@
 import Foundation
 import SwiftUI
 import Combine
+import Security
 
 // MARK: - Notion Configuration
 struct NotionConfig {
-    // FocusTime Log database ID
-    static let databaseId = "7d77e9fdc53b4d5099c9686741d250b4"
-    
-    // Road to Mastery database ID (for linking daily entries)
-    static let roadToMasteryDatabaseId = "cb4c9ebb51a04a2ebbfe02a310575d8f"
+    private static let apiKeyDefaultsKey = "notionApiKey"
+    private static let databaseIdDefaultsKey = "notionDatabaseId"
+    private static let roadToMasteryDatabaseIdDefaultsKey = "notionRoadToMasteryDatabaseId"
+    private static let keychainService = "FocusTime.Notion"
+    private static let keychainAccount = "notionApiKey"
     
     static var apiKey: String {
-        get { UserDefaults.standard.string(forKey: "notionApiKey") ?? "" }
-        set { UserDefaults.standard.set(newValue, forKey: "notionApiKey") }
+        get {
+            if let token = KeychainStore.read(service: keychainService, account: keychainAccount) {
+                return token
+            }
+            
+            if let legacyToken = UserDefaults.standard.string(forKey: apiKeyDefaultsKey), !legacyToken.isEmpty {
+                KeychainStore.save(legacyToken, service: keychainService, account: keychainAccount)
+                UserDefaults.standard.removeObject(forKey: apiKeyDefaultsKey)
+                return legacyToken
+            }
+            
+            return ""
+        }
+        set {
+            let trimmedValue = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmedValue.isEmpty {
+                KeychainStore.delete(service: keychainService, account: keychainAccount)
+            } else {
+                KeychainStore.save(trimmedValue, service: keychainService, account: keychainAccount)
+            }
+            UserDefaults.standard.removeObject(forKey: apiKeyDefaultsKey)
+        }
+    }
+    
+    static var databaseId: String {
+        get { UserDefaults.standard.string(forKey: databaseIdDefaultsKey) ?? "" }
+        set { UserDefaults.standard.set(cleanDatabaseId(newValue), forKey: databaseIdDefaultsKey) }
+    }
+    
+    static var roadToMasteryDatabaseId: String {
+        get { UserDefaults.standard.string(forKey: roadToMasteryDatabaseIdDefaultsKey) ?? "" }
+        set { UserDefaults.standard.set(cleanDatabaseId(newValue), forKey: roadToMasteryDatabaseIdDefaultsKey) }
     }
     
     static var isConfigured: Bool {
-        !apiKey.isEmpty
+        !apiKey.isEmpty && !databaseId.isEmpty
     }
     
     static var syncEnabled: Bool {
         get { UserDefaults.standard.bool(forKey: "notionSyncEnabled") }
         set { UserDefaults.standard.set(newValue, forKey: "notionSyncEnabled") }
+    }
+    
+    private static func cleanDatabaseId(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "-", with: "")
+    }
+}
+
+// MARK: - Keychain Storage
+enum KeychainStore {
+    static func read(service: String, account: String) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        
+        guard status == errSecSuccess,
+              let data = item as? Data,
+              let value = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        
+        return value
+    }
+    
+    static func save(_ value: String, service: String, account: String) {
+        let data = Data(value.utf8)
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+        
+        let attributes: [String: Any] = [
+            kSecValueData as String: data
+        ]
+        
+        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if status == errSecItemNotFound {
+            var newItem = query
+            newItem[kSecValueData as String] = data
+            SecItemAdd(newItem as CFDictionary, nil)
+        }
+    }
+    
+    static func delete(service: String, account: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+        
+        SecItemDelete(query as CFDictionary)
     }
 }
 
@@ -119,12 +210,12 @@ class NotionService: ObservableObject {
     
     // MARK: - Public Methods
     
-    func syncSession(date: Date, sessions: Int, tagBreakdown: [String: Int], workMinutes: Int) async {
+    func syncSession(date: Date, sessions: Int, tagBreakdown: [String: Int], workMinutes: Int) async -> Bool {
         guard NotionConfig.isConfigured && NotionConfig.syncEnabled else {
             await MainActor.run {
                 lastSyncStatus = "Sync disabled"
             }
-            return
+            return true
         }
         
         await MainActor.run {
@@ -171,6 +262,11 @@ class NotionService: ObservableObject {
                     lastSyncTime = Date()
                 }
             }
+            
+            await MainActor.run {
+                isSyncing = false
+            }
+            return true
         } catch {
             await MainActor.run {
                 lastSyncStatus = "✗ \(error.localizedDescription)"
@@ -181,6 +277,7 @@ class NotionService: ObservableObject {
         await MainActor.run {
             isSyncing = false
         }
+        return false
     }
     
     /// Sync all historical sessions to Notion
@@ -346,6 +443,10 @@ class NotionService: ObservableObject {
     }
     
     private func findRoadToMasteryEntry(for date: Date) async -> String? {
+        guard !NotionConfig.roadToMasteryDatabaseId.isEmpty else {
+            return nil
+        }
+        
         let dateString = formatDate(date)
         
         let filter: [String: Any] = [

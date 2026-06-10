@@ -10,6 +10,25 @@ import Combine
 import Carbon.HIToolbox
 import UserNotifications
 
+// MARK: - Shared Defaults Keys
+enum FocusTimeDefaults {
+    static let suiteName = "guyfromtheke.FocusTime"
+    
+    static let terminalCommand = "terminalCommand"
+    static let terminalCommandID = "terminalCommandID"
+    static let terminalCommandIssuedAt = "terminalCommandIssuedAt"
+    static let terminalLastCommandID = "terminalLastCommandID"
+    static let terminalLastCommandStatus = "terminalLastCommandStatus"
+    static let terminalLastCommandHandledAt = "terminalLastCommandHandledAt"
+    
+    static let runtimeMode = "runtimeMode"
+    static let runtimeIsRunning = "runtimeIsRunning"
+    static let runtimeTimeRemaining = "runtimeTimeRemaining"
+    static let runtimeTodaySessions = "runtimeTodaySessions"
+    static let runtimeDailyGoal = "runtimeDailyGoal"
+    static let runtimeUpdatedAt = "runtimeUpdatedAt"
+}
+
 // MARK: - Timer Mode Enum
 enum TimerMode: String {
     case work = "Work"
@@ -19,9 +38,15 @@ enum TimerMode: String {
 
 // MARK: - Timer State
 class TimerState: ObservableObject {
-    @Published var timeRemaining: Int
-    @Published var isRunning = false
-    @Published var mode: TimerMode = .work
+    @Published var timeRemaining: Int {
+        didSet { saveRuntimeStatus() }
+    }
+    @Published var isRunning = false {
+        didSet { saveRuntimeStatus() }
+    }
+    @Published var mode: TimerMode = .work {
+        didSet { saveRuntimeStatus() }
+    }
     @Published var showTagPicker = false
     
     let sessionHistory = SessionHistory()
@@ -48,6 +73,7 @@ class TimerState: ObservableObject {
     @Published var dailyGoal: Int {
         didSet {
             UserDefaults.standard.set(dailyGoal, forKey: "dailyGoal")
+            saveRuntimeStatus()
         }
     }
     
@@ -72,6 +98,8 @@ class TimerState: ObservableObject {
         
         // Set workMinutes on sessionHistory for Notion sync
         sessionHistory.workMinutes = self.workMinutes
+        saveRuntimeStatus()
+        sessionHistory.retryPendingNotionSyncs()
         
         // Listen for day changes to refresh UI at midnight
         NotificationCenter.default.addObserver(
@@ -121,6 +149,16 @@ class TimerState: ObservableObject {
     
     func dailyGoalReached() -> Bool {
         return todaySessions() >= dailyGoal
+    }
+    
+    func saveRuntimeStatus() {
+        let defaults = UserDefaults.standard
+        defaults.set(mode.rawValue, forKey: FocusTimeDefaults.runtimeMode)
+        defaults.set(isRunning, forKey: FocusTimeDefaults.runtimeIsRunning)
+        defaults.set(timeRemaining, forKey: FocusTimeDefaults.runtimeTimeRemaining)
+        defaults.set(todaySessions(), forKey: FocusTimeDefaults.runtimeTodaySessions)
+        defaults.set(dailyGoal, forKey: FocusTimeDefaults.runtimeDailyGoal)
+        defaults.set(Date().timeIntervalSince1970, forKey: FocusTimeDefaults.runtimeUpdatedAt)
     }
 }
 
@@ -238,6 +276,44 @@ class HotkeyManager {
     }
 }
 
+// MARK: - Terminal Command Bridge
+class TerminalCommandCenter {
+    static let shared = TerminalCommandCenter()
+    
+    var handler: ((String) -> Bool)?
+    
+    private init() {}
+    
+    func configure(handler: @escaping (String) -> Bool) {
+        self.handler = handler
+        processPendingCommand()
+    }
+    
+    func processPendingCommand() {
+        let defaults = UserDefaults.standard
+        guard let command = defaults.string(forKey: FocusTimeDefaults.terminalCommand),
+              let commandID = defaults.string(forKey: FocusTimeDefaults.terminalCommandID),
+              !command.isEmpty else {
+            return
+        }
+        
+        if defaults.string(forKey: FocusTimeDefaults.terminalLastCommandID) == commandID {
+            defaults.removeObject(forKey: FocusTimeDefaults.terminalCommand)
+            return
+        }
+        
+        guard let handler = handler else {
+            return
+        }
+        
+        let handled = handler(command)
+        defaults.set(commandID, forKey: FocusTimeDefaults.terminalLastCommandID)
+        defaults.set(handled ? "handled \(command)" : "unknown command \(command)", forKey: FocusTimeDefaults.terminalLastCommandStatus)
+        defaults.set(Date().timeIntervalSince1970, forKey: FocusTimeDefaults.terminalLastCommandHandledAt)
+        defaults.removeObject(forKey: FocusTimeDefaults.terminalCommand)
+    }
+}
+
 // MARK: - App Delegate
 class AppDelegate: NSObject, NSApplicationDelegate {
     var hotkeyManager: HotkeyManager?
@@ -247,6 +323,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let callback = toggleCallback {
             hotkeyManager = HotkeyManager(callback: callback)
         }
+        TerminalCommandCenter.shared.processPendingCommand()
+    }
+    
+    func applicationDidBecomeActive(_ notification: Notification) {
+        TerminalCommandCenter.shared.processPendingCommand()
+    }
+    
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        TerminalCommandCenter.shared.processPendingCommand()
+        return true
     }
     
     func applicationWillTerminate(_ notification: Notification) {
@@ -266,6 +352,8 @@ struct FocusTimeApp: App {
     @AppStorage("focusModeEnabled") private var focusModeEnabled = true
     
     var body: some Scene {
+        let _ = configureTerminalCommands()
+        
         MenuBarExtra {
             ContentView(
                 timerState: timerState,
@@ -311,6 +399,38 @@ struct FocusTimeApp: App {
     
     // MARK: - Timer Control Functions
     
+    func configureTerminalCommands() -> Bool {
+        TerminalCommandCenter.shared.configure(handler: handleTerminalCommand)
+        timerState.saveRuntimeStatus()
+        return true
+    }
+    
+    func handleTerminalCommand(_ command: String) -> Bool {
+        switch command {
+        case "start":
+            if !timerState.isRunning {
+                startTimer()
+            }
+        case "pause":
+            if timerState.isRunning {
+                pauseTimer()
+            }
+        case "toggle":
+            toggleTimer()
+        case "reset":
+            resetTimer()
+        case "switch":
+            switchMode()
+        case "open":
+            NSApplication.shared.activate(ignoringOtherApps: true)
+        default:
+            return false
+        }
+        
+        timerState.saveRuntimeStatus()
+        return true
+    }
+    
     func toggleTimer() {
         if timerState.isRunning {
             pauseTimer()
@@ -320,6 +440,7 @@ struct FocusTimeApp: App {
     }
     
     func startTimer() {
+        guard !timerState.isRunning else { return }
         timerState.isRunning = true
         
         if timerState.mode == .work && focusModeEnabled {
@@ -347,6 +468,11 @@ struct FocusTimeApp: App {
     }
     
     func pauseTimer() {
+        guard timerState.isRunning || timer != nil else {
+            timerState.saveRuntimeStatus()
+            return
+        }
+        
         timerState.isRunning = false
         timer?.invalidate()
         timer = nil
@@ -363,6 +489,7 @@ struct FocusTimeApp: App {
         
         pauseTimer()
         timerState.timeRemaining = timerState.currentModeDuration()
+        timerState.saveRuntimeStatus()
     }
     
     func switchMode() {
@@ -380,12 +507,15 @@ struct FocusTimeApp: App {
             timerState.mode = .work
             timerState.timeRemaining = timerState.workDuration
         }
+        
+        timerState.saveRuntimeStatus()
     }
     
     func completeSessionWithTag(_ tag: String) {
         timerState.completeSession(tag: tag)
         timerState.showTagPicker = false
         switchMode()
+        timerState.saveRuntimeStatus()
     }
     
     func sendNotification() {

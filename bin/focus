@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_dir/.." && pwd)"
+project="$repo_root/FocusTime.xcodeproj"
+scheme="FocusTime"
+derived_data="${FOCUSTIME_DERIVED_DATA:-/tmp/FocusTime-xcodebuild}"
+dev_app="$derived_data/Build/Products/Debug/FocusTime.app"
+defaults_domain="guyfromtheke.FocusTime"
+container_defaults="$HOME/Library/Containers/$defaults_domain/Data/Library/Preferences/$defaults_domain"
+
+usage() {
+  cat <<'EOF'
+Usage: focus [command] [--build] [--dev] [--help]
+
+Opens and controls FocusTime from the terminal.
+
+Commands:
+  open     Open FocusTime. This is the default.
+  start    Start the current timer.
+  pause    Pause the current timer.
+  toggle   Toggle start/pause.
+  reset    Reset the current timer.
+  switch   Switch between work and break modes.
+  status   Print the last known timer status.
+
+Options:
+  --build   Force a local Debug build before opening.
+  --dev     Open the local development build, building it if needed.
+  --help    Show this help.
+EOF
+}
+
+build_app() {
+  xcodebuild \
+    -project "$project" \
+    -scheme "$scheme" \
+    -configuration Debug \
+    -derivedDataPath "$derived_data" \
+    build
+}
+
+open_dev_app() {
+  if [[ ! -d "$dev_app" ]]; then
+    build_app
+  fi
+
+  open "$dev_app"
+}
+
+open_app() {
+  if [[ "$dev_mode" == true ]]; then
+    open_dev_app
+    return
+  fi
+
+  if open -Ra "FocusTime" 2>/dev/null; then
+    open -a "FocusTime"
+    return
+  fi
+
+  open_dev_app
+}
+
+read_default() {
+  defaults read "$(defaults_target)" "$1" 2>/dev/null || true
+}
+
+defaults_target() {
+  if [[ -f "$container_defaults.plist" || -d "$HOME/Library/Containers/$defaults_domain" ]]; then
+    echo "$container_defaults"
+  else
+    echo "$defaults_domain"
+  fi
+}
+
+write_default_string() {
+  defaults write "$(defaults_target)" "$1" -string "$2"
+}
+
+write_default_float() {
+  defaults write "$(defaults_target)" "$1" -float "$2"
+}
+
+format_time() {
+  local seconds="${1:-0}"
+  if ! [[ "$seconds" =~ ^[0-9]+$ ]]; then
+    seconds=0
+  fi
+
+  printf "%02d:%02d" "$((seconds / 60))" "$((seconds % 60))"
+}
+
+print_status() {
+  local mode running remaining sessions goal updated updated_text state
+
+  mode="$(read_default runtimeMode)"
+  running="$(read_default runtimeIsRunning)"
+  remaining="$(read_default runtimeTimeRemaining)"
+  sessions="$(read_default runtimeTodaySessions)"
+  goal="$(read_default runtimeDailyGoal)"
+  updated="$(read_default runtimeUpdatedAt)"
+
+  if [[ -z "$mode" || -z "$remaining" ]]; then
+    echo "FocusTime has not reported status yet. Run: focus open"
+    return 1
+  fi
+
+  if [[ "$running" == "1" ]]; then
+    state="running"
+  else
+    state="paused"
+  fi
+
+  updated_text=""
+  if [[ "$updated" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    updated_text=" · updated $(date -r "${updated%.*}" '+%H:%M:%S')"
+  fi
+
+  echo "$mode · $state · $(format_time "$remaining") · ${sessions:-0}/${goal:-0} sessions today$updated_text"
+}
+
+send_command() {
+  local command="$1"
+  local command_id
+  command_id="$(date +%s)-$$-$RANDOM"
+
+  write_default_string terminalCommand "$command"
+  write_default_string terminalCommandID "$command_id"
+  write_default_float terminalCommandIssuedAt "$(date +%s)"
+
+  open_app
+
+  for _ in {1..40}; do
+    if [[ "$(read_default terminalLastCommandID)" == "$command_id" ]]; then
+      print_status
+      return 0
+    fi
+    sleep 0.125
+  done
+
+  echo "Queued '$command'. FocusTime will handle it when it activates."
+}
+
+force_build=false
+dev_mode=false
+command="open"
+
+for arg in "$@"; do
+  case "$arg" in
+    --build)
+      force_build=true
+      dev_mode=true
+      ;;
+    --dev)
+      dev_mode=true
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    open|start|pause|toggle|reset|switch|status)
+      command="$arg"
+      ;;
+    *)
+      echo "Unknown option: $arg" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ "$force_build" == true ]]; then
+  build_app
+fi
+
+case "$command" in
+  open)
+    open_app
+    ;;
+  status)
+    print_status
+    ;;
+  start|pause|toggle|reset|switch)
+    send_command "$command"
+    ;;
+esac
