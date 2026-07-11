@@ -90,6 +90,11 @@ class SessionHistory: ObservableObject {
         loadHistory()
         loadPendingNotionSyncDates()
         migrateLegacyData()
+        syncToPlanner()
+    }
+
+    private func syncToPlanner() {
+        PlannerSync.shared.push(history: history, tags: availableTags, workMinutes: workMinutes)
     }
     
     // MARK: - Public Methods
@@ -120,9 +125,10 @@ class SessionHistory: ObservableObject {
         
         history[key] = dayData
         saveHistory()
-        
+
         // Sync to Notion
         syncToNotion(dateKey: key)
+        syncToPlanner()
     }
     
     func sessions(for date: Date) -> Int {
@@ -140,6 +146,7 @@ class SessionHistory: ObservableObject {
         history[todayKey()] = []
         saveHistory()
         syncToNotion(dateKey: todayKey())
+        syncToPlanner()
     }
     
     func dateFromKey(_ key: String) -> Date? {
