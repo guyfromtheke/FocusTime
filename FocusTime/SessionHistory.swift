@@ -119,13 +119,13 @@ class SessionHistory: ObservableObject {
     func addSession(tag: String) {
         let key = todayKey()
         var dayData = history[key] ?? []
-        
+
         if let index = dayData.firstIndex(where: { $0.tag == tag }) {
             dayData[index].count += 1
         } else {
             dayData.append(TaggedSession(tag: tag, count: 1))
         }
-        
+
         history[key] = dayData
         saveHistory()
 
@@ -133,7 +133,38 @@ class SessionHistory: ObservableObject {
         syncToNotion(dateKey: key)
         syncToPlanner()
     }
-    
+
+    /// Moves one count from `fromTag` to `newTag` for the given day, without changing the
+    /// day's total. Used to relabel a session that was already recorded (as "Other") the moment
+    /// its timer hit zero, once the user picks the real tag — so the count itself is durable
+    /// even if the app quits before the tag picker is ever answered; only the label can be lost,
+    /// defaulting to "Other" instead of the whole session silently vanishing.
+    func relabelSession(dateKey: String, from fromTag: String, to newTag: String) {
+        guard fromTag != newTag else { return }
+
+        var dayData = history[dateKey] ?? []
+        guard let fromIndex = dayData.firstIndex(where: { $0.tag == fromTag }), dayData[fromIndex].count > 0 else {
+            return
+        }
+
+        dayData[fromIndex].count -= 1
+        if dayData[fromIndex].count == 0 {
+            dayData.remove(at: fromIndex)
+        }
+
+        if let toIndex = dayData.firstIndex(where: { $0.tag == newTag }) {
+            dayData[toIndex].count += 1
+        } else {
+            dayData.append(TaggedSession(tag: newTag, count: 1))
+        }
+
+        history[dateKey] = dayData
+        saveHistory()
+
+        syncToNotion(dateKey: dateKey)
+        syncToPlanner()
+    }
+
     func sessions(for date: Date) -> Int {
         let key = dateFormatter.string(from: date)
         guard let dayData = history[key] else { return 0 }

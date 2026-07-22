@@ -51,6 +51,10 @@ class TimerState: ObservableObject {
     @Published var showTagPicker = false
     @Published var focusModeWarning: String? = nil
 
+    /// Set the moment a work session is recorded (as "Other") so the tag picker knows which
+    /// day's placeholder entry to relabel once the user actually picks a tag.
+    var pendingTagDateKey: String? = nil
+
     /// Wall-clock anchor for the running countdown. Using an absolute end time (rather than
     /// just decrementing a counter per tick) keeps the countdown accurate across system sleep,
     /// since `Timer` ticks don't fire while asleep but real time still elapses.
@@ -145,10 +149,6 @@ class TimerState: ObservableObject {
         let total = currentModeDuration()
         guard total > 0 else { return 0 }
         return 1.0 - (Double(timeRemaining) / Double(total))
-    }
-    
-    func completeSession(tag: String) {
-        sessionHistory.addSession(tag: tag)
     }
     
     func dailyGoalProgress() -> Double {
@@ -355,7 +355,24 @@ class TerminalCommandCenter {
 class AppDelegate: NSObject, NSApplicationDelegate {
     var hotkeyManager: HotkeyManager?
     var toggleCallback: (() -> Void)?
-    
+
+    /// Two instances of FocusTime (e.g. a dev build left running alongside the installed one)
+    /// share the same `UserDefaults` suite with no locking or merge — whichever quits last wins
+    /// and silently overwrites the other's session history. Refuse to launch a second instance
+    /// instead of risking that race.
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        guard let bundleID = Bundle.main.bundleIdentifier else { return }
+        let myPID = ProcessInfo.processInfo.processIdentifier
+        let others = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+            .filter { $0.processIdentifier != myPID }
+
+        guard let existing = others.first else { return }
+
+        AppLog.app.warning("Another FocusTime instance (pid \(existing.processIdentifier)) is already running — quitting this one instead of risking a session-data race.")
+        existing.activate()
+        NSApp.terminate(nil)
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let callback = toggleCallback {
             hotkeyManager = HotkeyManager(callback: callback)
@@ -544,15 +561,22 @@ struct FocusTimeApp: App {
         timer?.invalidate()
         timer = nil
 
-        func notifyAndAdvance() {
-            if wasWorkSession {
-                timerState.showTagPicker = true
-                // A completed work session needs the user to pick a tag before the next break
-                // can start — surface the window instead of leaving that stuck behind the menu
-                // bar icon, where it's easy to not notice for a while if you're heads-down.
-                showMainWindow()
-            }
+        if wasWorkSession {
+            // Record the session immediately, synchronously, before anything async (Focus Mode,
+            // notifications) runs — so the count is durably saved even if the app quits before
+            // the tag picker is ever answered. The tag picker only relabels this placeholder
+            // entry afterwards; it no longer creates the record.
+            let dateKey = timerState.sessionHistory.todayKey()
+            timerState.sessionHistory.addSession(tag: "Other")
+            timerState.pendingTagDateKey = dateKey
+            timerState.showTagPicker = true
+            // A completed work session needs the user to pick a tag before the next break can
+            // start — surface the window instead of leaving that stuck behind the menu bar icon,
+            // where it's easy to not notice for a while if you're heads-down.
+            showMainWindow()
+        }
 
+        func notifyAndAdvance() {
             NSSound(named: "Glass")?.play()
             sendNotification()
 
@@ -625,7 +649,14 @@ struct FocusTimeApp: App {
     }
     
     func completeSessionWithTag(_ tag: String) {
-        timerState.completeSession(tag: tag)
+        if let dateKey = timerState.pendingTagDateKey {
+            timerState.sessionHistory.relabelSession(dateKey: dateKey, from: "Other", to: tag)
+        } else {
+            // No pending placeholder found (shouldn't normally happen) — record it now rather
+            // than silently dropping the tag choice.
+            timerState.sessionHistory.addSession(tag: tag)
+        }
+        timerState.pendingTagDateKey = nil
         timerState.showTagPicker = false
         switchMode()
         timerState.saveRuntimeStatus()
