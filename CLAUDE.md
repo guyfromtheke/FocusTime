@@ -112,6 +112,30 @@ if `log show` errors with "too many arguments").
    the glyph via a luminance threshold (~200/255), crop to its bounding box with
    ~18% padding, square-pad, export at 18/36/54px.
 
+9. **A completed work session is recorded immediately** (`finishInterval()` in
+   `FocusTimeApp.swift`), synchronously, tagged `"Other"`, *before* the async
+   Focus Mode / notification chain runs. The tag picker calls
+   `SessionHistory.relabelSession(dateKey:from:to:)` to retag that placeholder
+   once the user actually picks a tag — it no longer creates the record itself
+   (`TimerState.pendingTagDateKey` tracks which day's placeholder to relabel).
+   Previously the session was only ever recorded when a tag was picked, so any
+   app restart/crash between session-end and tagging silently lost that
+   session's count entirely. Don't revert to recording only on tag selection.
+
+10. **The app refuses to launch a second instance** (`AppDelegate.applicationWillFinishLaunching`
+    in `FocusTimeApp.swift`, checked via `NSRunningApplication.runningApplications(withBundleIdentifier:)`).
+    This matters because macOS's own launch deduplication is path-based, not
+    bundle-ID-based — a dev build at `/tmp/...` and the installed copy at
+    `/Applications/FocusTime.app` share a bundle ID but are "different apps" to
+    `open`, so both could run at once. Since `SessionHistory` persists by
+    serializing its *entire* in-memory dictionary to `UserDefaults` on every
+    write (no locking, no merge), two live instances silently clobber each
+    other's session history — whichever saves last wins outright. This was
+    caught live: a dev-build test session's write got overwritten by a
+    still-running `/Applications` instance from earlier testing. If you ever
+    need multiple instances for testing again, explicitly `pkill` every other
+    copy first — the guard will otherwise quit whichever one launches second.
+
 ## Known gaps not yet addressed
 
 - No test target, no CI/CD, no notarization/signing pipeline (local "Sign to Run
