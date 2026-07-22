@@ -49,7 +49,13 @@ class TimerState: ObservableObject {
         didSet { saveRuntimeStatus() }
     }
     @Published var showTagPicker = false
-    
+    @Published var focusModeWarning: String? = nil
+
+    /// Wall-clock anchor for the running countdown. Using an absolute end time (rather than
+    /// just decrementing a counter per tick) keeps the countdown accurate across system sleep,
+    /// since `Timer` ticks don't fire while asleep but real time still elapses.
+    var endDate: Date?
+
     let sessionHistory = SessionHistory()
     
     @Published var workMinutes: Int {
@@ -74,6 +80,7 @@ class TimerState: ObservableObject {
     @Published var dailyGoal: Int {
         didSet {
             UserDefaults.standard.set(dailyGoal, forKey: "dailyGoal")
+            sessionHistory.dailyGoal = dailyGoal
             saveRuntimeStatus()
         }
     }
@@ -99,6 +106,7 @@ class TimerState: ObservableObject {
         
         // Set workMinutes on sessionHistory for Notion sync
         sessionHistory.workMinutes = self.workMinutes
+        sessionHistory.dailyGoal = self.dailyGoal   // re-pushes to planner if it differs from the default
         saveRuntimeStatus()
         sessionHistory.retryPendingNotionSyncs()
         
@@ -164,54 +172,53 @@ class TimerState: ObservableObject {
 }
 
 // MARK: - Focus Mode Manager
+enum FocusModeResult {
+    case enabled
+    /// The "shortcuts" CLI ran but the named Shortcut doesn't exist (or another non-zero exit).
+    case unavailable
+}
+
 class FocusModeManager {
-    
-    static func enableFocus() {
-        let task = Process()
-        task.launchPath = "/usr/bin/shortcuts"
-        task.arguments = ["run", "Start Focus"]
-        
-        do {
-            try task.run()
-        } catch {
-            AppLog.app.warning("Focus mode shortcut not found. Using fallback.")
-            enableFocusViaAppleScript()
-        }
+
+    static func enableFocus(completion: @escaping (FocusModeResult) -> Void) {
+        runShortcut(name: "Start Focus", completion: completion)
     }
-    
-    static func disableFocus() {
-        let task = Process()
-        task.launchPath = "/usr/bin/shortcuts"
-        task.arguments = ["run", "Stop Focus"]
-        
-        do {
-            try task.run()
-        } catch {
-            AppLog.app.warning("Focus mode shortcut not found. Using fallback.")
-            disableFocusViaAppleScript()
-        }
+
+    static func disableFocus(completion: @escaping (FocusModeResult) -> Void) {
+        runShortcut(name: "Stop Focus", completion: completion)
     }
-    
-    private static func enableFocusViaAppleScript() {
-        let script = """
-        do shell script "defaults -currentHost write com.apple.notificationcenterui doNotDisturb -boolean true && killall NotificationCenter 2>/dev/null || true"
-        """
-        runAppleScript(script)
-    }
-    
-    private static func disableFocusViaAppleScript() {
-        let script = """
-        do shell script "defaults -currentHost write com.apple.notificationcenterui doNotDisturb -boolean false && killall NotificationCenter 2>/dev/null || true"
-        """
-        runAppleScript(script)
-    }
-    
-    private static func runAppleScript(_ source: String) {
-        guard let script = NSAppleScript(source: source) else { return }
-        var error: NSDictionary?
-        script.executeAndReturnError(&error)
-        if let error = error {
-            AppLog.app.error("AppleScript error: \(String(describing: error), privacy: .public)")
+
+    /// There used to be an AppleScript fallback here that toggled
+    /// `com.apple.notificationcenterui doNotDisturb` directly. That key stopped being honored by
+    /// Notification Center on macOS Monterey and later, so it silently did nothing — worse than
+    /// no fallback, because it looked like it worked. Removed; failures are now reported to the
+    /// caller instead so the UI can tell the user Focus Mode isn't actually engaging.
+    private static func runShortcut(name: String, completion: @escaping (FocusModeResult) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/usr/bin/shortcuts")
+            task.arguments = ["run", name]
+            task.standardOutput = FileHandle.nullDevice
+            task.standardError = FileHandle.nullDevice
+
+            let result: FocusModeResult
+            do {
+                try task.run()
+                task.waitUntilExit()
+                if task.terminationStatus == 0 {
+                    result = .enabled
+                } else {
+                    AppLog.app.warning("Shortcut '\(name, privacy: .public)' exited with status \(task.terminationStatus). Create it in the Shortcuts app to enable Focus Mode.")
+                    result = .unavailable
+                }
+            } catch {
+                AppLog.app.warning("Could not run 'shortcuts' CLI: \(error.localizedDescription, privacy: .public)")
+                result = .unavailable
+            }
+
+            DispatchQueue.main.async {
+                completion(result)
+            }
         }
     }
 }
@@ -367,7 +374,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     func applicationWillTerminate(_ notification: Notification) {
         if UserDefaults.standard.bool(forKey: "focusModeEnabled") {
-            FocusModeManager.disableFocus()
+            // Best-effort: the app is on its way out, so there's no one left to report a
+            // completion to and no time to wait for it.
+            FocusModeManager.disableFocus { _ in }
         }
     }
 }
@@ -405,7 +414,8 @@ struct FocusTimeApp: App {
                     .monospacedDigit()
                     .foregroundColor(menuBarColor)
             } else {
-                Image(systemName: "timer")
+                Image("MenuBarIcon")
+                    .renderingMode(.template)
             }
         }
         .menuBarExtraStyle(.window)
@@ -496,51 +506,100 @@ struct FocusTimeApp: App {
     func startTimer() {
         guard !timerState.isRunning else { return }
         timerState.isRunning = true
-        
+        timerState.endDate = Date().addingTimeInterval(TimeInterval(timerState.timeRemaining))
+
         if timerState.mode == .work && focusModeEnabled {
-            FocusModeManager.enableFocus()
-        }
-        
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
-            if timerState.timeRemaining > 0 {
-                timerState.timeRemaining -= 1
-            } else {
-                pauseTimer()
-                
-                if timerState.mode == .work {
-                    timerState.showTagPicker = true
-                }
-                
-                NSSound(named: "Glass")?.play()
-                sendNotification()
-                
-                if timerState.mode != .work {
-                    switchMode()
+            FocusModeManager.enableFocus { result in
+                if case .unavailable = result {
+                    timerState.focusModeWarning = "Focus Mode shortcut not found. Create \"Start Focus\" and \"Stop Focus\" shortcuts in the Shortcuts app."
+                } else {
+                    timerState.focusModeWarning = nil
                 }
             }
         }
+
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
+            guard let endDate = timerState.endDate else { return }
+            let remaining = Int(ceil(endDate.timeIntervalSinceNow))
+
+            if remaining > 0 {
+                timerState.timeRemaining = remaining
+            } else {
+                timerState.timeRemaining = 0
+                finishInterval()
+            }
+        }
     }
-    
+
+    /// Called when a work/break interval runs out on its own (as opposed to a user-initiated
+    /// pause). Turning off Focus Mode is asynchronous (it shells out to a Shortcut), so the
+    /// notification is deliberately sent only after that completes — sending it immediately
+    /// raced the shortcut and the notification banner was getting silently swallowed by
+    /// still-active Focus/Do Not Disturb.
+    private func finishInterval() {
+        let wasWorkSession = timerState.mode == .work
+
+        timerState.isRunning = false
+        timerState.endDate = nil
+        timer?.invalidate()
+        timer = nil
+
+        func notifyAndAdvance() {
+            if wasWorkSession {
+                timerState.showTagPicker = true
+                // A completed work session needs the user to pick a tag before the next break
+                // can start — surface the window instead of leaving that stuck behind the menu
+                // bar icon, where it's easy to not notice for a while if you're heads-down.
+                showMainWindow()
+            }
+
+            NSSound(named: "Glass")?.play()
+            sendNotification()
+
+            if !wasWorkSession {
+                switchMode()
+            }
+        }
+
+        if wasWorkSession && focusModeEnabled {
+            FocusModeManager.disableFocus { result in
+                if case .unavailable = result {
+                    timerState.focusModeWarning = "Focus Mode may still be on — the \"Stop Focus\" shortcut wasn't found. Create \"Start Focus\" and \"Stop Focus\" shortcuts in the Shortcuts app."
+                } else {
+                    timerState.focusModeWarning = nil
+                }
+                notifyAndAdvance()
+            }
+        } else {
+            notifyAndAdvance()
+        }
+    }
+
     func pauseTimer() {
         guard timerState.isRunning || timer != nil else {
             timerState.saveRuntimeStatus()
             return
         }
-        
+
         timerState.isRunning = false
+        timerState.endDate = nil
         timer?.invalidate()
         timer = nil
-        
+
         if timerState.mode == .work && focusModeEnabled {
-            FocusModeManager.disableFocus()
+            // A failure here is arguably worse than an enable failure: the user's session ended
+            // but their Mac may be stuck in Do Not Disturb, and they won't know why.
+            FocusModeManager.disableFocus { result in
+                if case .unavailable = result {
+                    timerState.focusModeWarning = "Focus Mode may still be on — the \"Stop Focus\" shortcut wasn't found. Create \"Start Focus\" and \"Stop Focus\" shortcuts in the Shortcuts app."
+                } else {
+                    timerState.focusModeWarning = nil
+                }
+            }
         }
     }
-    
+
     func resetTimer() {
-        if timerState.isRunning && timerState.mode == .work && focusModeEnabled {
-            FocusModeManager.disableFocus()
-        }
-        
         pauseTimer()
         timerState.timeRemaining = timerState.currentModeDuration()
         timerState.saveRuntimeStatus()

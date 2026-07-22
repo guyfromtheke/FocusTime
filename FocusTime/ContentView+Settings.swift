@@ -151,10 +151,17 @@ extension ContentView {
                     Toggle("Focus Mode", isOn: $focusModeEnabled)
                         .toggleStyle(.checkbox)
                         .font(.caption)
-                    
+
                     Image(systemName: "moon.fill")
                         .font(.caption)
                         .foregroundColor(.purple)
+                }
+
+                if focusModeEnabled, let warning = timerState.focusModeWarning {
+                    Text("⚠️ \(warning)")
+                        .font(.caption2)
+                        .foregroundColor(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             

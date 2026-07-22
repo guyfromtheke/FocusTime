@@ -33,11 +33,12 @@ A minimal, beautiful Pomodoro timer for macOS with Notion integration.
 - **Retry failed syncs** - Failed Notion days are marked for retry
 
 ### macOS Integration
-- **Menu bar app** - Lives in your menu bar, always accessible
-- **Focus Mode** - Automatically enables Do Not Disturb during work sessions
+- **Menu bar app only** - No Dock icon, no window on launch (`LSUIElement`); lives entirely in the menu bar
+- **Focus Mode** - Runs `Start Focus` / `Stop Focus` Shortcuts (via the `shortcuts` CLI) around work sessions. Requires you to create those two Shortcuts yourself in the Shortcuts app; if either is missing, a warning appears under the toggle in Settings instead of failing silently
 - **Launch at login** - Start automatically when you log in
 - **Sound alerts** - Audio notification when sessions complete
-- **Native notifications** - System notifications for session completion
+- **Native notifications** - System notification when a session ends, sent only after Focus Mode has finished turning off (so it isn't swallowed by your own Do Not Disturb)
+- **Auto-surfaces the window** - When a work session ends, the app window comes to the front so the tag picker isn't missed
 
 ## Screenshots
 
@@ -109,6 +110,20 @@ focus reset     # Reset the current timer
 focus switch    # Switch between work and break mode
 focus status    # Print the last known timer status
 ```
+
+### Install as a Standalone App
+
+To run FocusTime like any other Mac app (Spotlight/Launchpad/Dock, no `bin/focus` needed):
+
+```bash
+xcodebuild -project FocusTime.xcodeproj -scheme FocusTime -configuration Release \
+  -derivedDataPath /tmp/FocusTime-release build
+rm -rf /Applications/FocusTime.app
+cp -R /tmp/FocusTime-release/Build/Products/Release/FocusTime.app /Applications/FocusTime.app
+open /Applications/FocusTime.app
+```
+
+Then enable **Settings → Launch at Login** so it starts on boot.
 
 ### Enable Network Access (Required for Notion Sync)
 
@@ -193,7 +208,7 @@ https://www.notion.so/workspace/7d77e9fdc53b4d5099c9686741d250b4?v=...
 | Daily Goal | Target sessions per day | 4 |
 | Sound Alert | Play sound when session ends | On |
 | Launch at Login | Start app when logging in | Off |
-| Focus Mode | Enable Do Not Disturb during work | On |
+| Focus Mode | Run `Start Focus`/`Stop Focus` Shortcuts during work | On |
 
 ### Tags
 

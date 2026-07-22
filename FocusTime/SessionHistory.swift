@@ -78,6 +78,9 @@ class SessionHistory: ObservableObject {
     private let pendingNotionSyncStorageKey = "pendingNotionSyncDates"
     
     var workMinutes: Int = 25  // Set by TimerState
+    var dailyGoal: Int = 4 {   // Set by TimerState
+        didSet { if oldValue != dailyGoal { syncToPlanner() } }
+    }
     
     private let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -94,7 +97,7 @@ class SessionHistory: ObservableObject {
     }
 
     private func syncToPlanner() {
-        PlannerSync.shared.push(history: history, tags: availableTags, workMinutes: workMinutes)
+        PlannerSync.shared.push(history: history, tags: availableTags, workMinutes: workMinutes, dailyGoal: dailyGoal)
     }
     
     // MARK: - Public Methods
@@ -268,9 +271,22 @@ class SessionHistory: ObservableObject {
         saveTags()
     }
     
-    func updateTag(oldName: String, newName: String, newColorHex: String) {
-        guard let index = availableTags.firstIndex(where: { $0.name == oldName }) else { return }
-        
+    /// Returns `false` (and makes no changes) if `newName` collides with another existing tag,
+    /// so callers can surface an error instead of silently creating two tags with the same name
+    /// — which would make `history` entries ambiguous, since sessions are keyed by tag name.
+    @discardableResult
+    func updateTag(oldName: String, newName: String, newColorHex: String) -> Bool {
+        guard let index = availableTags.firstIndex(where: { $0.name == oldName }) else { return false }
+
+        let trimmedNewName = newName.trimmingCharacters(in: .whitespaces)
+        guard !trimmedNewName.isEmpty else { return false }
+
+        if trimmedNewName.lowercased() != oldName.lowercased(),
+           availableTags.contains(where: { $0.name.lowercased() == trimmedNewName.lowercased() }) {
+            return false
+        }
+
+        let newName = trimmedNewName
         let wasDefault = availableTags[index].isDefault
         availableTags[index] = SessionTag(name: newName, colorHex: newColorHex, isDefault: wasDefault)
         saveTags()
@@ -289,6 +305,8 @@ class SessionHistory: ObservableObject {
                 saveHistory()
             }
         }
+
+        return true
     }
     
     func getTag(byName name: String) -> SessionTag? {

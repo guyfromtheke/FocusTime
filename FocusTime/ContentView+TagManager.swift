@@ -35,6 +35,7 @@ extension ContentView {
                                 editingTag = tag
                                 editTagName = tag.name
                                 editTagColor = tag.color
+                                tagEditError = nil
                                 showEditTag = true
                             } label: {
                                 Image(systemName: "pencil.circle.fill")
@@ -86,6 +87,7 @@ extension ContentView {
                         Button("Cancel") {
                             showEditTag = false
                             editingTag = nil
+                            tagEditError = nil
                         }
                         .buttonStyle(.plain)
                         .font(.caption)
@@ -102,12 +104,23 @@ extension ContentView {
                             .frame(width: 30)
                     }
                     
+                    if let error = tagEditError {
+                        Text(error)
+                            .font(.caption2)
+                            .foregroundColor(.red)
+                    }
+
                     Button("Save Changes") {
                         if !editTagName.isEmpty {
                             let hex = editTagColor.toHex() ?? "#607D8B"
-                            timerState.sessionHistory.updateTag(oldName: tag.name, newName: editTagName, newColorHex: hex)
-                            showEditTag = false
-                            editingTag = nil
+                            let succeeded = timerState.sessionHistory.updateTag(oldName: tag.name, newName: editTagName, newColorHex: hex)
+                            if succeeded {
+                                showEditTag = false
+                                editingTag = nil
+                                tagEditError = nil
+                            } else {
+                                tagEditError = "A tag named \"\(editTagName)\" already exists."
+                            }
                         }
                     }
                     .buttonStyle(.borderedProminent)

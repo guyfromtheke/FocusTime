@@ -24,15 +24,17 @@ final class PlannerSync {
         let schemaVersion: Int
         let exportedAt: Date
         let workMinutes: Int
+        let dailyGoal: Int
         let history: [String: [TaggedSession]]
         let tags: [SessionTag]
     }
 
-    func push(history: [String: [TaggedSession]], tags: [SessionTag], workMinutes: Int) {
+    func push(history: [String: [TaggedSession]], tags: [SessionTag], workMinutes: Int, dailyGoal: Int) {
         let payload = Payload(
             schemaVersion: 1,
             exportedAt: Date(),
             workMinutes: workMinutes,
+            dailyGoal: dailyGoal,
             history: history,
             tags: tags
         )

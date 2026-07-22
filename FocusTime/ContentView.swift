@@ -36,6 +36,7 @@ struct ContentView: View {
     @State var editingTag: SessionTag? = nil
     @State var editTagName = ""
     @State var editTagColor = Color.blue
+    @State var tagEditError: String? = nil
     
     // Notion settings
     @State var notionApiKey = ""
